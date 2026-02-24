@@ -23,9 +23,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
-
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version=8.4
+        with:
+          gradle-version: 8.4 # 指定全局 gradle 版本
 
       - name: Download scrcpy-server
         run: |
@@ -35,7 +34,7 @@ jobs:
           ls -la app/src/main/assets/scrcpy-server
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
