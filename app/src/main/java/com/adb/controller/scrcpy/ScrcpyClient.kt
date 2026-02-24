@@ -7,7 +7,7 @@ import android.view.Surface
 import com.adb.controller.adb.AdbManager
 import com.adb.controller.adb.AdbStreamReader
 import dadb.AdbStream
-import java.io.ByteArrayOutputStream
+import okio.buffer
 import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -54,10 +54,7 @@ class ScrcpyClient(private val adbManager: AdbManager) {
         if (running.get()) return false
 
         try {
-            // 1. 推送 scrcpy-server
-            // （假设已在外部调用 adbManager.pushScrcpyServer()）
-
-            // 2. 启动 scrcpy-server 进程
+            // 1. 启动 scrcpy-server 进程
             Log.i(TAG, "启动 scrcpy-server...")
             serverStream = adbManager.startScrcpyServer()
             if (serverStream == null) {
@@ -68,7 +65,7 @@ class ScrcpyClient(private val adbManager: AdbManager) {
             // 等待 server 初始化
             Thread.sleep(1500)
 
-            // 3. 连接视频流
+            // 2. 连接视频流
             Log.i(TAG, "连接视频流...")
             videoStream = adbManager.openScrcpyStream()
             if (videoStream == null) {
@@ -77,12 +74,12 @@ class ScrcpyClient(private val adbManager: AdbManager) {
                 return false
             }
 
-            // 4. 连接控制流
+            // 3. 连接控制流
             Log.i(TAG, "连接控制流...")
             controlStream = adbManager.openScrcpyStream()
 
-            // 5. 解析视频流头部
-            val videoReader = AdbStreamReader { videoStream!!.read() }
+            // 4. 解析视频流头部 (使用 okio Source)
+            val videoReader = AdbStreamReader(videoStream!!.source)
 
             // 读取 dummy byte
             videoReader.readByte()
@@ -92,7 +89,7 @@ class ScrcpyClient(private val adbManager: AdbManager) {
             deviceName = videoReader.readString(DEVICE_NAME_LENGTH)
             Log.i(TAG, "设备名称: $deviceName")
 
-            // 读取 codec id (4 bytes) - "h264" = 0x68323634
+            // 读取 codec id (4 bytes)
             val codecId = videoReader.readInt()
             Log.d(TAG, "Codec ID: ${Integer.toHexString(codecId)}")
 
@@ -104,7 +101,7 @@ class ScrcpyClient(private val adbManager: AdbManager) {
             // 读取控制流的 dummy byte
             if (controlStream != null) {
                 try {
-                    val controlReader = AdbStreamReader { controlStream!!.read() }
+                    val controlReader = AdbStreamReader(controlStream!!.source)
                     controlReader.readByte()
                     Log.d(TAG, "控制流 dummy byte 已读取")
                 } catch (e: Exception) {
@@ -112,16 +109,16 @@ class ScrcpyClient(private val adbManager: AdbManager) {
                 }
             }
 
-            // 6. 设置控制输出流
-            controlOutput = AdbStreamOutputStream(controlStream!!)
+            // 5. 设置控制输出流 (使用 okio Sink)
+            controlOutput = OkioSinkOutputStream(controlStream!!.sink.buffer())
 
-            // 7. 设置 MediaCodec 解码器
+            // 6. 设置 MediaCodec 解码器
             setupDecoder(surface)
 
-            // 8. 通知连接成功
+            // 7. 通知连接成功
             callback?.onConnected(deviceName, videoWidth, videoHeight)
 
-            // 9. 启动解码循环
+            // 8. 启动解码循环
             running.set(true)
             startDecodingLoop(videoReader)
 
@@ -239,7 +236,7 @@ class ScrcpyClient(private val adbManager: AdbManager) {
 
     private fun feedDecoder(data: ByteArray, pts: Long, isConfig: Boolean) {
         val codec = decoder ?: return
-        val inputIndex = codec.dequeueInputBuffer(10_000) // 10ms 超时
+        val inputIndex = codec.dequeueInputBuffer(10_000)
         if (inputIndex >= 0) {
             val inputBuffer = codec.getInputBuffer(inputIndex) ?: return
             inputBuffer.clear()
@@ -253,10 +250,9 @@ class ScrcpyClient(private val adbManager: AdbManager) {
         val codec = decoder ?: return
         val bufferInfo = MediaCodec.BufferInfo()
         while (true) {
-            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 1000) // 1ms 超时
+            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 1000)
             when {
                 outputIndex >= 0 -> {
-                    // 渲染到 Surface
                     codec.releaseOutputBuffer(outputIndex, true)
                 }
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -270,29 +266,27 @@ class ScrcpyClient(private val adbManager: AdbManager) {
                         callback?.onVideoSizeChanged(w, h)
                     }
                 }
-                else -> break // INFO_TRY_AGAIN_LATER
+                else -> break
             }
         }
     }
 
     /**
-     * 将 AdbStream 的 write 封装为 OutputStream
+     * 将 okio BufferedSink 封装为 java.io.OutputStream
      */
-    private class AdbStreamOutputStream(private val stream: AdbStream) : OutputStream() {
+    private class OkioSinkOutputStream(private val sink: okio.BufferedSink) : OutputStream() {
         override fun write(b: Int) {
-            stream.write(byteArrayOf(b.toByte()))
+            sink.writeByte(b)
+            sink.flush()
         }
 
         override fun write(b: ByteArray, off: Int, len: Int) {
-            if (off == 0 && len == b.size) {
-                stream.write(b)
-            } else {
-                stream.write(b.copyOfRange(off, off + len))
-            }
+            sink.write(b, off, len)
+            sink.flush()
         }
 
         override fun flush() {
-            // ADB stream 没有缓冲
+            sink.flush()
         }
     }
 }

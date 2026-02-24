@@ -133,7 +133,7 @@ fun AddDeviceDialog(
                         modifier = Modifier.weight(1f),
                         enabled = host.isNotBlank() && !isTesting,
                         shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedButtonDefaults.outlinedButtonColors(
+                        colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = Accent
                         )
                     ) {
